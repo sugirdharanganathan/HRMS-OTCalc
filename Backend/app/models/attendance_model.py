@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, text, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, text, ForeignKey, Float, Boolean
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -13,6 +13,10 @@ class Attendance(Base):
     # store clock_in/out as DateTime when possible; API can send ISO strings or time strings
     clock_in = Column(DateTime, nullable=True)
     clock_out = Column(DateTime, nullable=True)
+    # derived fields (auto-calculated in service)
+    working_hours = Column(Float, nullable=True)  # total hours worked (e.g., 8.5)
+    ot_hours = Column(Float, nullable=True)       # overtime hours beyond regular 9 hours
+    ot = Column(Boolean, nullable=True)           # True if overtime was performed
     created_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=False)
     # updated_at auto-updates on row modification at the DB server side
     updated_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), server_onupdate=text("CURRENT_TIMESTAMP"), nullable=True)

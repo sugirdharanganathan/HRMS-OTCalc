@@ -8,8 +8,9 @@ from fastapi.responses import JSONResponse
 from app.database import SessionLocal
 from app.models.attendance_model import Attendance
 from app.services.attendance_service import create_attendance, list_attendance, update_attendance, delete_attendance
-from app.services.excel_service import create_or_append_attendance_excel, write_attendance_to_excel
-from fastapi.responses import FileResponse
+from app.services.excel_service import create_or_append_attendance_excel, write_attendance_to_excel, build_attendance_workbook_bytes
+from fastapi.responses import FileResponse, StreamingResponse
+from datetime import datetime
 
 router = APIRouter()
 
@@ -35,6 +36,9 @@ class AttendanceOut(BaseModel):
     name: str
     clock_in: Optional[datetime] = None
     clock_out: Optional[datetime] = None
+    working_hours: Optional[float] = None
+    ot_hours: Optional[float] = None
+    ot: Optional[bool] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -66,12 +70,14 @@ def api_list_attendance(db: Session = Depends(get_db)):
     return JSONResponse(content=result)
 
 
-@router.get("/export-excel", response_class=FileResponse)
+@router.get("/export-excel")
 def export_attendance(db: Session = Depends(get_db)):
     records = db.query(Attendance).all()
-    excel_path = create_or_append_attendance_excel(records)
-    headers = {"Content-Disposition": 'attachment; filename="employee_data.xlsx"'}
-    return FileResponse(path=excel_path, headers=headers, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    # Stream an in-memory workbook to avoid file locking issues and ensure latest headers/values
+    xlsx_bytes = build_attendance_workbook_bytes(records)
+    ts = datetime.now().strftime("%Y%m%d%H%M%S")
+    headers = {"Content-Disposition": f'attachment; filename="attendance_export_{ts}.xlsx"'}
+    return StreamingResponse(iter([xlsx_bytes]), headers=headers, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @router.put("/{emp_id}")

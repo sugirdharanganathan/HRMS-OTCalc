@@ -2,8 +2,9 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from app.models.attendance_model import Attendance
 from app.models.employee_model import Employee
-from app.services.excel_service import write_attendance_to_excel, create_or_append_attendance_excel
+from app.services.excel_service import write_attendance_to_excel
 from datetime import datetime
+from datetime import timedelta
 
 
 def _parse_time_or_datetime(val: Optional[str]) -> Optional[datetime]:
@@ -51,6 +52,23 @@ def _parse_time_or_datetime(val: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _compute_hours(clock_in: Optional[datetime], clock_out: Optional[datetime]) -> tuple[Optional[float], Optional[float], Optional[bool]]:
+    """Compute working hours, OT hours, and OT flag given clock-in/out.
+    Returns (working_hours, ot_hours, ot_flag)."""
+    if not clock_in or not clock_out:
+        return None, None, None
+    try:
+        delta: timedelta = clock_out - clock_in
+        total_hours = max(delta.total_seconds() / 3600.0, 0.0)
+        # round to 2 decimals for storage consistency
+        total_hours = round(total_hours, 2)
+        ot_hours = round(max(total_hours - 9.0, 0.0), 2)
+        ot_flag = ot_hours > 0.0
+        return total_hours, ot_hours, ot_flag
+    except Exception:
+        return None, None, None
+
+
 def create_attendance(db: Session, data: dict) -> Attendance:
     # Parse clock_in/clock_out strings into datetimes if present
     if "clock_in" in data:
@@ -67,16 +85,21 @@ def create_attendance(db: Session, data: dict) -> Attendance:
         if emp:
             data["name"] = emp.name
 
+    # Compute derived hours if possible
+    working_hours, ot_hours, ot_flag = _compute_hours(data.get("clock_in"), data.get("clock_out"))
+    data["working_hours"] = working_hours
+    data["ot_hours"] = ot_hours
+    data["ot"] = ot_flag
+
     att = Attendance(**data)
     db.add(att)
     db.commit()
     db.refresh(att)
 
-    # append new attendance to excel
+    # Regenerate full attendance excel to reflect all rows and updated columns
     try:
-        # load all for a clean append decision
         all_att = db.query(Attendance).all()
-        create_or_append_attendance_excel(all_att)
+        write_attendance_to_excel(all_att)
     except Exception:
         pass
 
@@ -109,6 +132,12 @@ def update_attendance(db: Session, emp_id: str, data: dict) -> Optional[Attendan
                     att.name = emp.name
             setattr(att, k, v)
 
+    # Recompute derived hours after updates
+    working_hours, ot_hours, ot_flag = _compute_hours(att.clock_in, att.clock_out)
+    att.working_hours = working_hours
+    att.ot_hours = ot_hours
+    att.ot = ot_flag
+
     db.add(att)
     db.commit()
     db.refresh(att)
@@ -124,11 +153,12 @@ def update_attendance(db: Session, emp_id: str, data: dict) -> Optional[Attendan
 
 
 def delete_attendance(db: Session, emp_id: str) -> bool:
-    att = get_attendance_by_emp_id(db, emp_id)
-    if not att:
+    # Delete ALL attendance rows for this employee to prevent stale rows in exports
+    rows = db.query(Attendance).filter(Attendance.emp_id == emp_id).all()
+    if not rows:
         return False
-
-    db.delete(att)
+    for r in rows:
+        db.delete(r)
     db.commit()
 
     try:

@@ -7,18 +7,35 @@ from openpyxl.styles import Font
 from sqlalchemy.orm import Session
 from app.models.employee_model import Employee
 from app.database import SessionLocal
+from io import BytesIO
 
 EXCEL_FILE_PATH = "employee_data.xlsx"  # single workbook for all exports (employees + attendance)
 HEADERS = ["emp_id", "name", "designation", "salary", "department", "hod", "supervisor", "status", "created_at", "updated_at"]
 
 # Attendance specific headers (written to a separate sheet in the same workbook)
-ATTENDANCE_HEADERS = ["emp_id", "name", "clock_in", "clock_out", "created_at", "updated_at"]
+# Includes computed fields: working_hours, ot_hours, ot (Yes/No)
+ATTENDANCE_HEADERS = [
+    "emp_id",
+    "name",
+    "clock_in",
+    "clock_out",
+    "working_hours",
+    "ot_hours",
+    "ot",
+    "created_at",
+    "updated_at",
+]
 
 
 def _get_or_create_sheet(wb: Workbook, sheet_name: str, headers: List[str]):
     """Return a worksheet with given name; create and populate headers if missing."""
     if sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
+        # Ensure headers are present and updated to the provided headers (uppercased)
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col)
+            cell.value = header.upper()
+            cell.font = Font(bold=True)
         return ws
 
     ws = wb.create_sheet(title=sheet_name)
@@ -186,85 +203,8 @@ def write_employees_to_excel(employees: List[Employee]) -> str:
 
 
 def create_or_append_attendance_excel(att_records: List[Employee]) -> str:
-    """Create or append attendance rows into the master workbook (Attendance sheet).
-    Accepts objects with emp_id, name, clock_in, clock_out, created_at attributes.
-    Returns path to the master workbook."""
-    sheet_name = "Attendance"
-    # Load or create workbook, preserving Employee Data sheet if it exists
-    if os.path.exists(EXCEL_FILE_PATH):
-        wb = load_workbook(EXCEL_FILE_PATH)
-        if "Employee Data" not in wb.sheetnames and wb.sheetnames:
-            # If there's a default sheet but no Employee Data, rename it
-            wb.active.title = "Employee Data"
-    else:
-        wb = Workbook()
-        if wb.sheetnames:  # Rename default sheet to Employee Data
-            wb.active.title = "Employee Data"
-    
-    # Get or create Attendance sheet
-    ws = _get_or_create_sheet(wb, sheet_name, ATTENDANCE_HEADERS)
-
-    # Collect existing records by emp_id
-    existing_keys = set()
-    for row in ws.iter_rows(min_row=2, max_col=1, values_only=True):
-        if row and row[0] is not None:
-            existing_keys.add(str(row[0]))
-
-    # Filter to only new records
-    new_records = [r for r in att_records if getattr(r, "emp_id", None) and str(r.emp_id) not in existing_keys]
-    if not new_records:
-        return EXCEL_FILE_PATH
-
-    start_row = ws.max_row + 1
-
-    for offset, rec in enumerate(new_records):
-        row = start_row + offset
-        ws.cell(row=row, column=1, value=getattr(rec, "emp_id", None))
-        ws.cell(row=row, column=2, value=getattr(rec, "name", None))
-        # write datetime as string if present
-        ci = getattr(rec, "clock_in", None)
-        co = getattr(rec, "clock_out", None)
-        try:
-            ws.cell(row=row, column=3, value=ci.strftime("%Y-%m-%d %H:%M:%S") if ci else None)
-        except Exception:
-            ws.cell(row=row, column=3, value=str(ci) if ci else None)
-        try:
-            ws.cell(row=row, column=4, value=co.strftime("%Y-%m-%d %H:%M:%S") if co else None)
-        except Exception:
-            ws.cell(row=row, column=4, value=str(co) if co else None)
-        ca = getattr(rec, "created_at", None)
-        try:
-            ws.cell(row=row, column=5, value=ca.strftime("%Y-%m-%d %H:%M:%S") if ca else None)
-        except Exception:
-            ws.cell(row=row, column=5, value=str(ca) if ca else None)
-        # updated_at
-        ua = getattr(rec, "updated_at", None)
-        try:
-            ws.cell(row=row, column=6, value=ua.strftime("%Y-%m-%d %H:%M:%S") if ua else None)
-        except Exception:
-            ws.cell(row=row, column=6, value=str(ua) if ua else None)
-
-    # Auto-adjust column widths
-    for col_idx in range(1, len(ATTENDANCE_HEADERS) + 1):
-        col_letter = get_column_letter(col_idx)
-        max_length = 0
-        for cell in ws[col_letter]:
-            if cell.value is not None:
-                cell_length = len(str(cell.value))
-                if cell_length > max_length:
-                    max_length = cell_length
-        ws.column_dimensions[col_letter].width = min(max_length + 2, 50)
-
-    target_path = os.path.abspath(EXCEL_FILE_PATH)
-    try:
-        wb.save(target_path)
-        return target_path
-    except PermissionError:
-        ts = datetime.now().strftime("%Y%m%d%H%M%S")
-        fallback_name = f"employee_data_{ts}.xlsx"
-        fallback_path = os.path.abspath(fallback_name)
-        wb.save(fallback_path)
-        return fallback_path
+    """Deprecated append behavior replaced: always write full Attendance sheet to ensure all columns and rows."""
+    return write_attendance_to_excel(att_records)
 
 
 def write_attendance_to_excel(att_records: List[Employee]) -> str:
@@ -301,17 +241,22 @@ def write_attendance_to_excel(att_records: List[Employee]) -> str:
             ws.cell(row=idx, column=4, value=co.strftime("%Y-%m-%d %H:%M:%S") if co else None)
         except Exception:
             ws.cell(row=idx, column=4, value=str(co) if co else None)
+        # computed columns
+        ws.cell(row=idx, column=5, value=getattr(rec, "working_hours", None))
+        ws.cell(row=idx, column=6, value=getattr(rec, "ot_hours", None))
+        ot_val = getattr(rec, "ot", None)
+        ws.cell(row=idx, column=7, value=("Yes" if ot_val else ("No" if ot_val is not None else None)))
+        # timestamps
         ca = getattr(rec, "created_at", None)
         try:
-            ws.cell(row=idx, column=5, value=ca.strftime("%Y-%m-%d %H:%M:%S") if ca else None)
+            ws.cell(row=idx, column=8, value=ca.strftime("%Y-%m-%d %H:%M:%S") if ca else None)
         except Exception:
-            ws.cell(row=idx, column=5, value=str(ca) if ca else None)
-        # updated_at
+            ws.cell(row=idx, column=8, value=str(ca) if ca else None)
         ua = getattr(rec, "updated_at", None)
         try:
-            ws.cell(row=idx, column=6, value=ua.strftime("%Y-%m-%d %H:%M:%S") if ua else None)
+            ws.cell(row=idx, column=9, value=ua.strftime("%Y-%m-%d %H:%M:%S") if ua else None)
         except Exception:
-            ws.cell(row=idx, column=6, value=str(ua) if ua else None)
+            ws.cell(row=idx, column=9, value=str(ua) if ua else None)
 
     for col_idx in range(1, len(ATTENDANCE_HEADERS) + 1):
         col_letter = get_column_letter(col_idx)
@@ -334,6 +279,59 @@ def write_attendance_to_excel(att_records: List[Employee]) -> str:
         wb.save(fallback_path)
         return fallback_path
 
+
+def build_attendance_workbook_bytes(att_records) -> bytes:
+    """Build an in-memory workbook containing only the Attendance sheet with up-to-date headers and rows.
+    Returns the XLSX bytes."""
+    wb = Workbook()
+    # Remove default sheet if present; create Attendance with headers
+    if wb.sheetnames:
+        default = wb.active
+        wb.remove(default)
+    ws = _get_or_create_sheet(wb, "Attendance", ATTENDANCE_HEADERS)
+
+    for idx, rec in enumerate(att_records, start=2):
+        ws.cell(row=idx, column=1, value=getattr(rec, "emp_id", None))
+        ws.cell(row=idx, column=2, value=getattr(rec, "name", None))
+        ci = getattr(rec, "clock_in", None)
+        co = getattr(rec, "clock_out", None)
+        try:
+            ws.cell(row=idx, column=3, value=ci.strftime("%Y-%m-%d %H:%M:%S") if ci else None)
+        except Exception:
+            ws.cell(row=idx, column=3, value=str(ci) if ci else None)
+        try:
+            ws.cell(row=idx, column=4, value=co.strftime("%Y-%m-%d %H:%M:%S") if co else None)
+        except Exception:
+            ws.cell(row=idx, column=4, value=str(co) if co else None)
+        ws.cell(row=idx, column=5, value=getattr(rec, "working_hours", None))
+        ws.cell(row=idx, column=6, value=getattr(rec, "ot_hours", None))
+        ot_val = getattr(rec, "ot", None)
+        ws.cell(row=idx, column=7, value=("Yes" if ot_val else ("No" if ot_val is not None else None)))
+        ca = getattr(rec, "created_at", None)
+        try:
+            ws.cell(row=idx, column=8, value=ca.strftime("%Y-%m-%d %H:%M:%S") if ca else None)
+        except Exception:
+            ws.cell(row=idx, column=8, value=str(ca) if ca else None)
+        ua = getattr(rec, "updated_at", None)
+        try:
+            ws.cell(row=idx, column=9, value=ua.strftime("%Y-%m-%d %H:%M:%S") if ua else None)
+        except Exception:
+            ws.cell(row=idx, column=9, value=str(ua) if ua else None)
+
+    for col_idx in range(1, len(ATTENDANCE_HEADERS) + 1):
+        col_letter = get_column_letter(col_idx)
+        max_length = 0
+        for cell in ws[col_letter]:
+            if cell.value is not None:
+                cell_length = len(str(cell.value))
+                if cell_length > max_length:
+                    max_length = cell_length
+        ws.column_dimensions[col_letter].width = min(max_length + 2, 50)
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
 
 def get_employee_by_id(db: Session, employee_id: int) -> Optional[Employee]:
     return db.query(Employee).filter(Employee.id == employee_id).first()

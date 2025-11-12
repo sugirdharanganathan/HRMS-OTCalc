@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from app.database import init_db
 from app.routers import employee_router
 from app.routers import attendance_router
+from app.routers import ot_router
+from app.routers import ot_configuration_approval_router
 from fastapi.middleware.cors import CORSMiddleware  # <-- Import this
 
 app = FastAPI(title="HRMS OTC API")
@@ -26,6 +28,8 @@ app.add_middleware(
 
 app.include_router(employee_router.router, prefix="/api/employees", tags=["employees"])
 app.include_router(attendance_router.router, prefix="/api/attendance", tags=["attendance"])
+app.include_router(ot_router.router, prefix="/api/ot_base_calculation", tags=["ot_base_calculation"])
+app.include_router(ot_configuration_approval_router.router, prefix="/api/ot_configuration_approval", tags=["ot_configuration_approval"])
 
 
 @app.on_event("startup")
